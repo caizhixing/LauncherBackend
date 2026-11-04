@@ -9,6 +9,7 @@ import com.caizhixing.feedback.model.dto.FeedbackListItem
 import com.caizhixing.feedback.model.dto.FeedbackListResponse
 import com.caizhixing.feedback.model.dto.SubmitFeedbackRequest
 import com.caizhixing.feedback.model.dto.SubmitFeedbackResponse
+import com.caizhixing.feedback.model.dto.UpdateStatusRequest
 import com.caizhixing.feedback.repository.FeedbackRepository
 import com.caizhixing.feedback.util.AppTime
 import com.caizhixing.feedback.util.RateLimitResult
@@ -16,7 +17,11 @@ import com.caizhixing.feedback.util.RateLimiter
 import java.time.Clock
 
 /**
- * 提交反馈 + 反馈列表查询（PRD §2.5，issue #5 追加 list）。
+ * 提交反馈（PRD §2.5）：校验 → 限流（同 deviceId 1/分 + 5/天，DECISIONS.md #限流语义）
+ * → 服务端补全（status=PENDING、images=[]、createdAt=updatedAt 同一时钟值）→ 落库返回自增 id。
+ * 列表查询（PRD §2.5，issue #5 追加 list）。
+ * 标记状态/删除（#6）：id 与 status 解析校验 40001 → 仓储未命中 40401；
+ * updatedAt 刷新取注入 Clock 当前值（两次更新间推进时钟即递增）。
  * DB 事务失败自然冒泡，由 StatusPages 兜底 50000（DECISIONS.md #DB故障降级实现）。
  */
 class FeedbackService(
@@ -87,7 +92,33 @@ class FeedbackService(
         updatedAt = AppTime.format(updatedAt),
     )
 
+    /** 标记处理状态（PRD §2.5）：id/status 解析校验 40001 → 仓储未命中 40401；updatedAt 取注入 Clock 当前值。 */
+    suspend fun updateStatus(id: String?, request: UpdateStatusRequest) {
+        val feedbackId = parseFeedbackId(id)
+        val status = statusFromRequest(request.status)
+        val updatedAt = AppTime.now(clock)
+        if (!repository.updateStatus(feedbackId, status, updatedAt)) {
+            throw ApiException(ErrorCode.NOT_FOUND, NOT_FOUND_MESSAGE)
+        }
+    }
+
+    /** 删除反馈（PRD §2.5 物理删除，非软删除）：id 解析校验 40001 → 仓储未命中 40401。 */
+    suspend fun delete(id: String?) {
+        val feedbackId = parseFeedbackId(id)
+        if (!repository.delete(feedbackId)) {
+            throw ApiException(ErrorCode.NOT_FOUND, NOT_FOUND_MESSAGE)
+        }
+    }
+
+    private fun statusFromRequest(value: Int?): FeedbackStatus = when (value) {
+        FeedbackStatus.PENDING.value -> FeedbackStatus.PENDING
+        FeedbackStatus.DONE.value -> FeedbackStatus.DONE
+        null -> throw ApiException(ErrorCode.BAD_REQUEST, "status: 必填")
+        else -> throw ApiException(ErrorCode.BAD_REQUEST, "status: 仅允许 0 或 1")
+    }
+
     private companion object {
         const val RATE_LIMITED_MESSAGE: String = "提交过于频繁，请稍后再试"
+        const val NOT_FOUND_MESSAGE: String = "反馈不存在"
     }
 }

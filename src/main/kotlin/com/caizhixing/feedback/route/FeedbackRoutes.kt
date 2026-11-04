@@ -22,8 +22,10 @@ private const val SUCCESS_MESSAGE = "success"
  * 请求体缺必填字段经 DTO 可空建模进入 service 校验器，逐字段产出 40001 message
  * （如 "title: 必填"，round1 契约对齐）；此处仅兜底仍抛异常的解码失败
  * （非法 JSON / 字段类型不匹配），按 PRD §2.5 归 40001，不落入 50000。
+ * #6 的状态/删除路由经 feedbackModerationRoutes()（独立文件）在此挂载。
  */
 fun Route.feedbackRoutes() {
+    feedbackModerationRoutes()
     post("/api/feedback") {
         val service: FeedbackService = call.get()
         val request = try {
