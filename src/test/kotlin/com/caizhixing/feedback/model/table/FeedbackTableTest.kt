@@ -8,7 +8,8 @@ import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
- * 行为 4.6：FeedbackTable 列名/可空性/长度/类型与 schema.sql 一一对应（常量断言）。
+ * 行为 4.6：FeedbackTable 列名/可空性/长度/类型与 schema.sql 一一对应（常量断言）；
+ * round1 扩充：status DEFAULT 0 与 idx_filter(app_name, category, created_at) 索引（PRD §2.1）。
  */
 class FeedbackTableTest {
 
@@ -73,6 +74,24 @@ class FeedbackTableTest {
         assertTrue(
             columnTypeOf("updated_at")::class.simpleName.orEmpty().contains("LocalDateTime"),
             "updated_at 应为 datetime 列",
+        )
+    }
+
+    @Test
+    fun statusColumnDefaultMatchesSchema() {
+        // schema.sql: `status` TINYINT NOT NULL DEFAULT 0
+        assertEquals(0.toByte(), FeedbackTable.status.defaultValueFun?.invoke())
+    }
+
+    @Test
+    fun filterIndexMatchesSchema() {
+        // schema.sql: KEY `idx_filter` (`app_name`, `category`, `created_at`)
+        val index = FeedbackTable.indices.single()
+        assertEquals("idx_filter", index.indexName)
+        assertEquals(false, index.unique)
+        assertEquals(
+            listOf("app_name", "category", "created_at"),
+            index.columns.map { it.name },
         )
     }
 

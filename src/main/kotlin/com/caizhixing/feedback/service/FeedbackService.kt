@@ -3,7 +3,6 @@ package com.caizhixing.feedback.service
 import com.caizhixing.feedback.model.ApiException
 import com.caizhixing.feedback.model.ErrorCode
 import com.caizhixing.feedback.model.Feedback
-import com.caizhixing.feedback.model.FeedbackCategory
 import com.caizhixing.feedback.model.FeedbackStatus
 import com.caizhixing.feedback.model.dto.SubmitFeedbackRequest
 import com.caizhixing.feedback.model.dto.SubmitFeedbackResponse
@@ -24,26 +23,27 @@ class FeedbackService(
     private val clock: Clock,
 ) {
     suspend fun submit(request: SubmitFeedbackRequest): SubmitFeedbackResponse {
-        when (val validation = FeedbackValidator.validate(request)) {
+        // 校验通过即拿到强类型输入（必填非空、category 已解析），无需二次空断言
+        val input = when (val validation = FeedbackValidator.validate(request)) {
             is ValidationResult.Invalid -> throw ApiException(ErrorCode.BAD_REQUEST, validation.message)
-            ValidationResult.Valid -> Unit
+            is ValidationResult.Valid -> validation.input
         }
-        when (rateLimiter.tryAcquire(request.deviceId)) {
+        when (rateLimiter.tryAcquire(input.deviceId)) {
             is RateLimitResult.Denied -> throw ApiException(ErrorCode.RATE_LIMITED, RATE_LIMITED_MESSAGE)
             RateLimitResult.Allowed -> Unit
         }
         val now = AppTime.now(clock)
         val feedback = Feedback(
             id = null,
-            title = request.title,
-            content = request.content,
-            category = FeedbackCategory.valueOf(request.category),
-            appName = request.appName,
-            appVersion = request.appVersion,
-            deviceModel = request.deviceModel,
-            osVersion = request.osVersion,
-            deviceId = request.deviceId,
-            contact = request.contact,
+            title = input.title,
+            content = input.content,
+            category = input.category,
+            appName = input.appName,
+            appVersion = input.appVersion,
+            deviceModel = input.deviceModel,
+            osVersion = input.osVersion,
+            deviceId = input.deviceId,
+            contact = input.contact,
             status = FeedbackStatus.PENDING,
             images = emptyList(),
             createdAt = now,

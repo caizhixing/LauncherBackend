@@ -5,12 +5,14 @@ import com.caizhixing.feedback.model.dto.SubmitFeedbackRequest
 import org.junit.jupiter.params.ParameterizedTest
 import org.junit.jupiter.params.provider.MethodSource
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertIs
 import kotlin.test.assertTrue
 
 /**
  * 行为 4.2：校验矩阵逐条 40001（参数化）+ 边界值（0/1/50/51、1000/1001、
  * 64/65、100/101、20/21）与全枚举/非枚举。
+ * round1 扩充：必填字段缺失（null，即请求体未传）逐字段出 "字段: 必填"（PRD §2.5）。
  */
 class FeedbackValidationTest {
 
@@ -35,19 +37,25 @@ class FeedbackValidationTest {
 
         @JvmStatic
         fun invalidCases(): List<InvalidCase> = listOf(
+            case("title 缺失", base().copy(title = null), "title"),
             case("title 空", base().copy(title = ""), "title"),
             case("title 纯空白", base().copy(title = "   "), "title"),
             case("title 51 字", base().copy(title = text(51)), "title"),
+            case("content 缺失", base().copy(content = null), "content"),
             case("content 空", base().copy(content = ""), "content"),
             case("content 纯空白", base().copy(content = " "), "content"),
             case("content 1001 字", base().copy(content = text(1001)), "content"),
+            case("category 缺失", base().copy(category = null), "category"),
             case("category 非枚举", base().copy(category = "FOO"), "category"),
             case("category 空", base().copy(category = ""), "category"),
             case("category 小写不匹配", base().copy(category = "bug"), "category"),
+            case("appName 缺失", base().copy(appName = null), "appName"),
             case("appName 空", base().copy(appName = ""), "appName"),
             case("appName 51 字", base().copy(appName = text(51)), "appName"),
+            case("appVersion 缺失", base().copy(appVersion = null), "appVersion"),
             case("appVersion 空", base().copy(appVersion = ""), "appVersion"),
             case("appVersion 21 字", base().copy(appVersion = text(21)), "appVersion"),
+            case("deviceId 缺失", base().copy(deviceId = null), "deviceId"),
             case("deviceId 空", base().copy(deviceId = ""), "deviceId"),
             case("deviceId 65 字", base().copy(deviceId = text(65)), "deviceId"),
             case("deviceModel 101 字", base().copy(deviceModel = text(101)), "deviceModel"),
@@ -67,6 +75,21 @@ class FeedbackValidationTest {
             "case=${case.name} 的 message 应以字段 ${case.field} 开头，实际: ${invalid.message}",
         )
     }
+
+    @Test
+    fun missingRequiredFieldsProduceFieldLevelMessage() {
+        // PRD §2.5：缺必填字段 message 指明具体字段与原因，格式 "字段: 必填"
+        assertEquals("title: 必填", invalidMessageOf(base().copy(title = null)))
+        assertEquals("content: 必填", invalidMessageOf(base().copy(content = null)))
+        assertEquals("category: 必填", invalidMessageOf(base().copy(category = null)))
+        assertEquals("appName: 必填", invalidMessageOf(base().copy(appName = null)))
+        assertEquals("appVersion: 必填", invalidMessageOf(base().copy(appVersion = null)))
+        assertEquals("deviceId: 必填", invalidMessageOf(base().copy(deviceId = null)))
+        assertEquals("title: 必填", invalidMessageOf(base().copy(title = ""))) // 空串与缺失同判
+    }
+
+    private fun invalidMessageOf(request: SubmitFeedbackRequest): String =
+        assertIs<ValidationResult.Invalid>(FeedbackValidator.validate(request)).message
 
     @Test
     fun boundaryValuesAccepted() {

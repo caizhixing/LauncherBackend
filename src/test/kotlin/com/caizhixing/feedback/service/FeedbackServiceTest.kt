@@ -167,8 +167,26 @@ class FeedbackServiceTest {
         }
 
         assertEquals(ErrorCode.BAD_REQUEST, error.code)
-        assertEquals("title 不能为空", error.message)
+        assertEquals("title: 必填", error.message)
         assertEquals(0, repository.inserted.size)
         assertEquals(0, limiter.keys.size) // 校验先于限流：非法请求不消耗限流配额
+    }
+
+    @Test
+    fun missingRequiredFieldRejectedWithFieldMessage() = runBlocking {
+        // round1 blocker1：请求体缺必填字段（DTO 可空建模为 null）逐字段出 40001 message
+        val clock = MutableClock(Instant.parse("2026-11-04T04:00:00Z"))
+        val repository = FakeFeedbackRepository()
+        val limiter = AllowAllRateLimiter()
+        val service = FeedbackService(repository, limiter, clock)
+
+        val error = assertFailsWith<ApiException> {
+            service.submit(validRequest().copy(title = null, contact = null))
+        }
+
+        assertEquals(ErrorCode.BAD_REQUEST, error.code)
+        assertEquals("title: 必填", error.message)
+        assertEquals(0, repository.inserted.size)
+        assertEquals(0, limiter.keys.size)
     }
 }

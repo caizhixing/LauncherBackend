@@ -5,7 +5,6 @@ import com.caizhixing.feedback.model.FeedbackCategory
 import com.caizhixing.feedback.model.FeedbackStatus
 import com.caizhixing.feedback.model.table.FeedbackTable
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.json.Json
@@ -13,11 +12,12 @@ import org.jetbrains.exposed.v1.core.ResultRow
 import org.jetbrains.exposed.v1.core.eq
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
-import org.jetbrains.exposed.v1.jdbc.transactions.suspendTransaction
+import org.jetbrains.exposed.v1.jdbc.transactions.experimental.newSuspendedTransaction
 
 /**
- * Exposed 实现（PRD §2.4）：suspend 事务（suspendTransaction + withContext(Dispatchers.IO)），
- * snake_case 列 ↔ camelCase 领域字段映射在本层完成；images 以 JSON 字符串落库（一期恒 "[]"）。
+ * Exposed 实现（PRD §2.4，round1 契约对齐）：统一 newSuspendedTransaction(Dispatchers.IO)
+ * 挂起事务（Exposed v1 包），snake_case 列 ↔ camelCase 领域字段映射在本层完成；
+ * images 以 JSON 字符串落库（一期恒 "[]"）。
  */
 class ExposedFeedbackRepository : FeedbackRepository {
 
@@ -25,33 +25,29 @@ class ExposedFeedbackRepository : FeedbackRepository {
 
     private val imagesSerializer = ListSerializer(String.serializer())
 
-    override suspend fun insert(feedback: Feedback): Long = withContext(Dispatchers.IO) {
-        suspendTransaction {
-            FeedbackTable.insert { row ->
-                row[title] = feedback.title
-                row[content] = feedback.content
-                row[category] = feedback.category.name
-                row[appName] = feedback.appName
-                row[appVersion] = feedback.appVersion
-                row[deviceModel] = feedback.deviceModel
-                row[osVersion] = feedback.osVersion
-                row[deviceId] = feedback.deviceId
-                row[contact] = feedback.contact
-                row[status] = feedback.status.value.toByte()
-                row[images] = imagesCodec.encodeToString(imagesSerializer, feedback.images)
-                row[createdAt] = feedback.createdAt
-                row[updatedAt] = feedback.updatedAt
-            }[FeedbackTable.id]
-        }
+    override suspend fun insert(feedback: Feedback): Long = newSuspendedTransaction(Dispatchers.IO) {
+        FeedbackTable.insert { row ->
+            row[title] = feedback.title
+            row[content] = feedback.content
+            row[category] = feedback.category.name
+            row[appName] = feedback.appName
+            row[appVersion] = feedback.appVersion
+            row[deviceModel] = feedback.deviceModel
+            row[osVersion] = feedback.osVersion
+            row[deviceId] = feedback.deviceId
+            row[contact] = feedback.contact
+            row[status] = feedback.status.value.toByte()
+            row[images] = imagesCodec.encodeToString(imagesSerializer, feedback.images)
+            row[createdAt] = feedback.createdAt
+            row[updatedAt] = feedback.updatedAt
+        }[FeedbackTable.id]
     }
 
-    override suspend fun findById(id: Long): Feedback? = withContext(Dispatchers.IO) {
-        suspendTransaction {
-            FeedbackTable.selectAll()
-                .where { FeedbackTable.id eq id }
-                .singleOrNull()
-                ?.toFeedback()
-        }
+    override suspend fun findById(id: Long): Feedback? = newSuspendedTransaction(Dispatchers.IO) {
+        FeedbackTable.selectAll()
+            .where { FeedbackTable.id eq id }
+            .singleOrNull()
+            ?.toFeedback()
     }
 
     private fun ResultRow.toFeedback(): Feedback = Feedback(
