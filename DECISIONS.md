@@ -22,11 +22,14 @@
 
 - 日期：2026-11-04
 - 背景：skill 要求用户亲自选定三角色模型，worker/reviewer 不得同家族。
-- 选定：主 agent = glm-5.3（会话模型）；worker = glm-5.3（GLM 家族，跟随会话）；
-  reviewer = `new-provider/k3$max`（k3 家族，最高推理档，2026-11-01 实测可作子 agent）。
-  家族组合 GLM × k3 满足跨模型约束。
-- 备选否决：deepseek-v4-pro 作子 agent（provider 硬拒 thinking 回传限制）；
-  worker/reviewer 同用 glm-5.3（同家族，打断错误相关性目的失效）。
+- 选定：主 agent = glm-5.3（会话模型）；worker = glm-5.3（GLM 家族，跟随会话=子代理缺省模型）；
+  reviewer = k3 家族最高档。家族组合 GLM × k3 满足跨模型约束。
+- **本机寻址落地（2026-11-04 实测）**：用户选项沿用了 skill 文档标识 `new-provider/k3$max`（旧机
+  Tapkit 配置）；本机 DSH profile 实际路由为 provider=`testbird`、model=`k3.1-pro`（本机唯一 k3
+  家族模型，且未暴露推理档参数，以其默认最高档执行）。subagent 调用格式：
+  `{provider:'testbird', model:'k3.1-pro'}`；worker 不传覆盖（缺省=会话 glm-5.3）。
+- 备选否决：deepseek-v4-pro 作子 agent（skill 记录 provider 硬拒 thinking 限制，且与本机默认
+  deepseek-flash 同家族风险）；worker/reviewer 同用 glm-5.3（同家族，打断错误相关性目的失效）。
 
 ## #依赖一次性联网
 
