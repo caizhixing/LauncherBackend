@@ -9,6 +9,7 @@ import com.caizhixing.feedback.model.FeedbackStatus
 import com.caizhixing.feedback.model.dto.FeedbackListItem
 import com.caizhixing.feedback.model.dto.SubmitFeedbackRequest
 import com.caizhixing.feedback.model.dto.SubmitFeedbackResponse
+import com.caizhixing.feedback.model.dto.UpdateStatusRequest
 import com.caizhixing.feedback.repository.FeedbackRepository
 import com.caizhixing.feedback.util.AppTime
 import com.caizhixing.feedback.util.FixedWindowRateLimiter
@@ -22,10 +23,12 @@ import java.time.ZoneId
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
 
 /**
  * 行为 4.1/4.3/4.4/4.5 + 行为 5.7（issue #5 追加 list）：fake Repository + 注入 Clock；
  * 限流路径直接复用 #2 的 FixedWindowRateLimiter（1/分 + 5/天，同实例两窗口）。
+ * 行为 6.1–6.5：updateStatus/delete 的值域校验、updatedAt 刷新与 40401 判定。
  */
 class FeedbackServiceTest {
 
@@ -45,6 +48,8 @@ class FeedbackServiceTest {
 
     private class FakeFeedbackRepository : FeedbackRepository {
         val inserted = mutableListOf<Pair<Long, Feedback>>()
+        val statusUpdates = mutableListOf<Triple<Long, FeedbackStatus, LocalDateTime>>()
+        val deletedIds = mutableListOf<Long>()
         private var nextId = 42L
 
         val listQueries = mutableListOf<Triple<FeedbackListFilter, Int, Int>>()
@@ -65,6 +70,20 @@ class FeedbackServiceTest {
         ): Pair<Long, List<Feedback>> {
             listQueries += Triple(filter, page, pageSize)
             return listResult
+        }
+
+        override suspend fun updateStatus(id: Long, status: FeedbackStatus, updatedAt: LocalDateTime): Boolean {
+            statusUpdates += Triple(id, status, updatedAt)
+            val index = inserted.indexOfFirst { it.first == id }
+            if (index < 0) return false
+            val (existingId, existing) = inserted[index]
+            inserted[index] = existingId to existing.copy(status = status, updatedAt = updatedAt)
+            return true
+        }
+
+        override suspend fun delete(id: Long): Boolean {
+            deletedIds += id
+            return inserted.removeAll { it.first == id }
         }
     }
 
@@ -271,5 +290,123 @@ class FeedbackServiceTest {
         assertEquals(emptyList<FeedbackListItem>(), overflow.list)
         assertEquals(99, overflow.page)
         assertEquals(20, overflow.pageSize)
+    }
+
+    @Test
+    fun updateStatusRejectsInvalidValue() = runBlocking {
+        // 行为 6.1：status 传 0/1 之外（含负数）或缺字段 → 40001，message 指明字段与原因
+        val clock = MutableClock(Instant.parse("2026-11-04T04:00:00Z"))
+        val repository = FakeFeedbackRepository()
+        val service = FeedbackService(repository, AllowAllRateLimiter(), clock)
+
+        val outOfDomain = assertFailsWith<ApiException> {
+            service.updateStatus("42", UpdateStatusRequest(status = 2))
+        }
+        assertEquals(ErrorCode.BAD_REQUEST, outOfDomain.code)
+        assertEquals("status: 仅允许 0 或 1", outOfDomain.message)
+
+        val negative = assertFailsWith<ApiException> {
+            service.updateStatus("42", UpdateStatusRequest(status = -1))
+        }
+        assertEquals(ErrorCode.BAD_REQUEST, negative.code)
+        assertEquals("status: 仅允许 0 或 1", negative.message)
+
+        val missing = assertFailsWith<ApiException> {
+            service.updateStatus("42", UpdateStatusRequest(status = null))
+        }
+        assertEquals(ErrorCode.BAD_REQUEST, missing.code)
+        assertEquals("status: 必填", missing.message)
+
+        assertEquals(0, repository.statusUpdates.size) // 非法值在触达仓储前短路
+        assertEquals(0, repository.deletedIds.size)
+    }
+
+    @Test
+    fun updateStatusTogglesAndRefreshesUpdatedAt() = runBlocking {
+        // 行为 6.2：0↔1 双向更新成功；updatedAt 刷新为注入 Clock 当前值且两次更新间递增
+        val clock = MutableClock(Instant.parse("2026-11-04T04:00:00Z")) // 上海 12:00:00
+        val repository = FakeFeedbackRepository()
+        val service = FeedbackService(repository, AllowAllRateLimiter(), clock)
+        service.submit(validRequest()) // → id 42，PENDING，updatedAt=12:00:00
+
+        service.updateStatus("42", UpdateStatusRequest(status = 1)) // PENDING → DONE
+
+        assertEquals(
+            listOf(Triple(42L, FeedbackStatus.DONE, LocalDateTime.of(2026, 11, 4, 12, 0, 0))),
+            repository.statusUpdates,
+        )
+        assertEquals(FeedbackStatus.DONE, repository.findById(42)?.status)
+
+        clock.advanceSeconds(90)
+        service.updateStatus("42", UpdateStatusRequest(status = 0)) // DONE → PENDING
+
+        val (_, secondStatus, secondUpdatedAt) = repository.statusUpdates[1]
+        assertEquals(FeedbackStatus.PENDING, secondStatus)
+        assertEquals(LocalDateTime.of(2026, 11, 4, 12, 1, 30), secondUpdatedAt) // 注入 Clock 当前值
+        assertTrue(secondUpdatedAt > repository.statusUpdates[0].third) // 两次更新 updatedAt 递增
+        assertEquals(secondUpdatedAt, repository.findById(42)?.updatedAt) // 落库行同步刷新
+    }
+
+    @Test
+    fun updateStatusMissingIdThrows40401() = runBlocking {
+        // 行为 6.3：id 不存在 → 40401；仓储收到完整参数后未命中才抛
+        val clock = MutableClock(Instant.parse("2026-11-04T04:00:00Z"))
+        val repository = FakeFeedbackRepository()
+        val service = FeedbackService(repository, AllowAllRateLimiter(), clock)
+
+        val error = assertFailsWith<ApiException> {
+            service.updateStatus("999", UpdateStatusRequest(status = 1))
+        }
+
+        assertEquals(ErrorCode.NOT_FOUND, error.code)
+        assertEquals("反馈不存在", error.message)
+        assertEquals(
+            listOf(Triple(999L, FeedbackStatus.DONE, LocalDateTime.of(2026, 11, 4, 12, 0, 0))),
+            repository.statusUpdates,
+        )
+    }
+
+    @Test
+    fun nonNumericIdRejected() = runBlocking {
+        // 行为 6.4：id 非数字（或缺失）→ 40001，update/delete 同口径，均不触达仓储
+        val clock = MutableClock(Instant.parse("2026-11-04T04:00:00Z"))
+        val repository = FakeFeedbackRepository()
+        val service = FeedbackService(repository, AllowAllRateLimiter(), clock)
+
+        val update = assertFailsWith<ApiException> {
+            service.updateStatus("abc", UpdateStatusRequest(status = 1))
+        }
+        assertEquals(ErrorCode.BAD_REQUEST, update.code)
+        assertEquals("id: 必须为数字", update.message)
+
+        val nullId = assertFailsWith<ApiException> { service.delete(null) }
+        assertEquals(ErrorCode.BAD_REQUEST, nullId.code)
+        assertEquals("id: 必须为数字", nullId.message)
+
+        val partialNumeric = assertFailsWith<ApiException> { service.delete("12x") }
+        assertEquals(ErrorCode.BAD_REQUEST, partialNumeric.code)
+        assertEquals("id: 必须为数字", partialNumeric.message)
+
+        assertEquals(0, repository.statusUpdates.size)
+        assertEquals(0, repository.deletedIds.size)
+    }
+
+    @Test
+    fun deleteBehaves() = runBlocking {
+        // 行为 6.5：删除存在 id → 无异常（route 封装 data=null）；不存在 → 40401
+        val clock = MutableClock(Instant.parse("2026-11-04T04:00:00Z"))
+        val repository = FakeFeedbackRepository()
+        val service = FeedbackService(repository, AllowAllRateLimiter(), clock)
+        service.submit(validRequest()) // → id 42
+
+        service.delete("42")
+
+        assertEquals(listOf(42L), repository.deletedIds)
+        assertEquals(null, repository.findById(42)) // 物理删除，非软删除
+
+        val error = assertFailsWith<ApiException> { service.delete("42") } // 已不存在
+        assertEquals(ErrorCode.NOT_FOUND, error.code)
+        assertEquals("反馈不存在", error.message)
+        assertEquals(listOf(42L, 42L), repository.deletedIds)
     }
 }

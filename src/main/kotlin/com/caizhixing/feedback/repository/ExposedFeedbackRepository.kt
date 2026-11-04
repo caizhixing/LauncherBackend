@@ -19,9 +19,12 @@ import org.jetbrains.exposed.v1.core.inList
 import org.jetbrains.exposed.v1.core.lessEq
 import org.jetbrains.exposed.v1.core.like
 import org.jetbrains.exposed.v1.core.or
+import org.jetbrains.exposed.v1.jdbc.deleteWhere
 import org.jetbrains.exposed.v1.jdbc.insert
 import org.jetbrains.exposed.v1.jdbc.selectAll
 import org.jetbrains.exposed.v1.jdbc.transactions.experimental.newSuspendedTransaction
+import org.jetbrains.exposed.v1.jdbc.update
+import java.time.LocalDateTime
 
 /**
  * Exposed 实现（PRD §2.4，round1 契约对齐）：统一 newSuspendedTransaction(Dispatchers.IO)
@@ -98,6 +101,18 @@ class ExposedFeedbackRepository : FeedbackRepository {
             }
         }
         return conditions.takeIf { it.isNotEmpty() }?.reduce { acc, condition -> acc and condition }
+    }
+
+    override suspend fun updateStatus(id: Long, status: FeedbackStatus, updatedAt: LocalDateTime): Boolean =
+        newSuspendedTransaction(Dispatchers.IO) {
+            FeedbackTable.update({ FeedbackTable.id eq id }) { row ->
+                row[FeedbackTable.status] = status.value.toByte()
+                row[FeedbackTable.updatedAt] = updatedAt
+            } > 0
+        }
+
+    override suspend fun delete(id: Long): Boolean = newSuspendedTransaction(Dispatchers.IO) {
+        FeedbackTable.deleteWhere { FeedbackTable.id eq id } > 0
     }
 
     private fun ResultRow.toFeedback(): Feedback = Feedback(
