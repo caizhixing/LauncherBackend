@@ -43,6 +43,47 @@ class AppConfigTest {
     }
 
     @Test
+    fun jwtSecretOfExactly31CharactersRejected() {
+        val secret31 = "0123456789abcdef0123456789abcde"
+        assertEquals(31, secret31.length)
+        val env = envWith(mapOf("JWT_SECRET" to secret31))
+        val error = assertFailsWith<IllegalArgumentException> {
+            AppConfig.load(env = env, conf = emptyMap())
+        }
+        val message = error.message ?: ""
+        assertTrue(message.contains("JWT_SECRET"), "message should name JWT_SECRET but was: $message")
+        assertTrue(message.contains("got 31"), "message should report actual length 31 but was: $message")
+    }
+
+    @Test
+    fun jwtSecretOfExactly32CharactersAccepted() {
+        val secret32 = "0123456789abcdef0123456789abcdef"
+        assertEquals(32, secret32.length)
+        val config = AppConfig.load(env = envWith(mapOf("JWT_SECRET" to secret32)), conf = emptyMap())
+        assertEquals(secret32, config.jwtSecret)
+    }
+
+    @Test
+    fun defaultLoadDelegateReadsProcessEnvironmentAndFailsFast() {
+        // 无参 load() 走默认参数 System::getenv（生产同路径；测试 JVM 不注入必填业务变量）：
+        // 覆盖该默认参数分支并断言 fail fast 输出真实进程环境的缺失清单
+        val expectedMissing = listOf(
+            "ADMIN_USERNAME",
+            "ADMIN_PASSWORD_HASH",
+            "JWT_SECRET",
+            "DB_URL",
+            "DB_USER",
+            "DB_PASSWORD",
+        ).filter { System.getenv(it).isNullOrBlank() }
+        assertTrue(expectedMissing.isNotEmpty(), "test JVM must not define the required business variables")
+        val error = assertFailsWith<IllegalArgumentException> { AppConfig.load() }
+        val message = error.message ?: ""
+        expectedMissing.forEach { key ->
+            assertTrue(message.contains(key), "message should list $key but was: $message")
+        }
+    }
+
+    @Test
     fun defaultsApplied() {
         val config = AppConfig.load(env = envWith(), conf = emptyMap())
         assertEquals(AppConfig.DEFAULT_PORT, config.port)
