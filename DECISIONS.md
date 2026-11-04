@@ -2,6 +2,42 @@
 
 > 需求变更前先查本文件。每条记：日期、背景、选定方案、被否掉的备选。
 
+## #验收与 PRD 外决策追认（阶段 5 终门）
+
+- 日期：2026-11-04（用户拍板：验收通过）
+- 六 PR 全部 MERGED（#8/#7/#10/#9/#12/#11），main 集成门禁 `--offline clean build` 全绿
+  （136 测试 0 失败，shadowJar 43.8 MB），里程碑 feedback-backend-v1 关闭。
+- 用户追认 13 条流程中产生的 PRD 外决策（业务语义，代码位置以各 PR verdict 评论为准）：
+  1) 校验先于限流，缺字段请求不消耗 IP 配额（40001>42900）；
+  2) 请求体反序列化失败统一 40001 而非 50000；
+  3) 空 query 语义：page/pageSize/category/status/日期传空串=40001，keyword 空串或全空白=视为未传；
+  4) 重复同名 query 参数取首个值（Ktor Parameters 语义）；
+  5) status 仅接受字面量 "0"/"1"，格式偏差一律 40001 不静默纠正；
+  6) 日期 STRICT 解析（2026-02-29 等不存在日期直接 40001）；
+  7) keyword 中 %/_ 按 SQL LIKE 通配符解释（不转义；如需按字面量匹配另开需求）；
+  8) 错误文案：id: 必须为数字 / status: 必填 / status: 仅允许 0 或 1 / 反馈不存在；
+  9) 状态接口缺字段（{} 或 null）归一 40001（可空 DTO 建模）；
+  10) id 用 toLongOrNull：不 trim、负数合法（走 40401）、全角数字按其值解析；
+  11) id 与 status 同时非法时先报 id 错误；
+  12) 成功响应固定 {"code":0,"message":"success","data":null}（JsonNull 保 data 键）；
+  13) 鉴权口径：有效签名 + subject 非空即放行，不比对管理员用户名。
+- 附注：仓库 15:58 起新装 identity-guard pre-commit 钩子（用户侧），worker 按钩子指引以
+  `-c user.name/email` 一次性身份提交，全局配置未动。
+
+## #流程复盘（阶段 6，2026-11-04）
+
+- 交付：6/6 PR 合并（合并率 100%），reviewer 全部 testbird/k3.1-pro 独立 worktree 亲跑复核。
+- 评审/返工：9 次 reviewer 执行、3 轮返工（PR#8 r1 覆盖率/边界/启动断言；PR#9 r1 契约对齐
+  ×3；PR#10 r1 反序列化分支测试），全部 round-2 pass；无一 PR 触发 3 轮冻结。
+- 契约升级 1 次（PR#9 r1 fail + contract_touched=yes）按协议升级用户，用户批准按评审返工。
+- agent 故障 2 起：W1 评审首轮 provider 寻址错误（skill 文档机型映射失效，双 reviewer 空转，
+  改 testbird/k3.1-pro 后恢复）；W2 worker-#3 首派零副作用失败，重派成功。GitHub 时间线
+  均为事实源，无脏现场。
+- 人介入门（设计内）：模型选型、PRD 冻结、PR#9 契约升级、终验收，共 4 次；无计划外人介。
+- 经验沉淀：中文 gh 内容必须 UTF-8 --body-file；Get-Content 需 -Encoding UTF8（本机默认
+  GBK）；--jq 表达式会被 PowerShell 拆词，改 ConvertFrom-Json；跨波合并的 Application.kt
+  装配冲突由主 agent 解决并保留双侧语义 + worktree 内全量测试验证。
+
 ## #PRD 冻结与拆分
 
 - 日期：2026-11-04（用户确认，设计内门）
