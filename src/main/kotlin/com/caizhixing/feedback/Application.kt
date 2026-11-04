@@ -51,8 +51,12 @@ fun Application.feedbackServerModule(config: AppConfig, extraRoutes: Routing.() 
                 single<RateLimiter>(named("loginRateLimiter")) { loginRateLimiter }
                 single { authService }
                 single<FeedbackRepository> { ExposedFeedbackRepository() }
-                // 单实例同时携带分钟/天两个固定窗口（DECISIONS.md #限流语义，复用 #2 RateLimiter）
-                single(FEEDBACK_RATE_LIMITER) { FixedWindowRateLimiter(minuteLimit = 1, dayLimit = 5, clock = get()) }
+                // 单实例同时携带分钟/天两个固定窗口（DECISIONS.md #限流语义，复用 #2 RateLimiter）。
+                // 注册类型必须声明为 RateLimiter 接口：Koin 按声明类型索引限定绑定，
+                // 用实现类型注册会让 FeedbackService 的 get(RateLimiter, 限定符) 解析失败 → 全量 50000
+                single<RateLimiter>(FEEDBACK_RATE_LIMITER) {
+                    FixedWindowRateLimiter(minuteLimit = 1, dayLimit = 5, clock = get())
+                }
                 single {
                     FeedbackService(
                         repository = get(),
@@ -74,36 +78,7 @@ fun Application.feedbackServerModule(config: AppConfig, extraRoutes: Routing.() 
 
 fun createServer(config: AppConfig): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> =
     embeddedServer(Netty, port = config.port, host = "0.0.0.0") {
-<<<<<<< HEAD
         feedbackServerModule(config)
-=======
-        install(Koin) {
-            modules(
-                module {
-                    single<AppConfig> { config }
-                    single<Clock> { Clock.system(AppTime.ZONE) }
-                    // 单实例同时携带分钟/天两个固定窗口（DECISIONS.md #限流语义，复用 #2 RateLimiter）。
-                    // 注册类型必须声明为 RateLimiter 接口：Koin 按声明类型索引限定绑定，
-                    // 用实现类型注册会让 FeedbackService 的 get(RateLimiter, 限定符) 解析失败 → 全量 50000
-                    single<RateLimiter>(FEEDBACK_RATE_LIMITER) {
-                        FixedWindowRateLimiter(minuteLimit = 1, dayLimit = 5, clock = get())
-                    }
-                    single<FeedbackRepository> { ExposedFeedbackRepository() }
-                    single {
-                        FeedbackService(
-                            repository = get(),
-                            rateLimiter = get(FEEDBACK_RATE_LIMITER),
-                            clock = get(),
-                        )
-                    }
-                },
-            )
-        }
-        installHttpPlugins(config)
-        routing {
-            feedbackRoutes()
-        }
->>>>>>> 6e1a33d (fix(issue-4): round1 契约对齐（字段级40001/表定义DEFAULT+索引/newSuspendedTransaction）)
     }
 
 fun main() {
