@@ -6,6 +6,7 @@ import com.caizhixing.feedback.plugin.installAuthWiring
 import com.caizhixing.feedback.plugin.installHttpPlugins
 import com.caizhixing.feedback.repository.ExposedFeedbackRepository
 import com.caizhixing.feedback.repository.FeedbackRepository
+import com.caizhixing.feedback.route.feedbackListRoutes
 import com.caizhixing.feedback.route.feedbackRoutes
 import com.caizhixing.feedback.route.loginRoutes
 import com.caizhixing.feedback.service.AuthService
@@ -72,6 +73,7 @@ fun Application.feedbackServerModule(config: AppConfig, extraRoutes: Routing.() 
     routing {
         loginRoutes()
         feedbackRoutes()
+        feedbackListRoutes()
         extraRoutes()
     }
 }
