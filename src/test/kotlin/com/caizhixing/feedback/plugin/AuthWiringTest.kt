@@ -115,12 +115,15 @@ class AuthWiringTest {
         return client.send(builder.build(), HttpResponse.BodyHandlers.ofString())
     }
 
-    private fun postLogin(username: String, password: String): HttpResponse<String> {
+    private fun postLogin(username: String, password: String): HttpResponse<String> =
+        postLoginRaw("""{"username":"$username","password":"$password"}""")
+
+    private fun postLoginRaw(body: String): HttpResponse<String> {
         val request = HttpRequest.newBuilder(URI.create("http://127.0.0.1:$port/api/login"))
             .version(HttpClient.Version.HTTP_1_1)
             .timeout(Duration.ofSeconds(10))
             .header("Content-Type", "application/json")
-            .POST(HttpRequest.BodyPublishers.ofString("""{"username":"$username","password":"$password"}"""))
+            .POST(HttpRequest.BodyPublishers.ofString(body))
             .build()
         return client.send(request, HttpResponse.BodyHandlers.ofString())
     }
@@ -128,6 +131,10 @@ class AuthWiringTest {
     private fun codeOf(response: HttpResponse<String>): Int =
         (Json.parseToJsonElement(response.body()).jsonObject["code"] as? JsonPrimitive)?.int
             ?: error("response body has no code field: ${response.body()}")
+
+    private fun messageOf(response: HttpResponse<String>): String =
+        (Json.parseToJsonElement(response.body()).jsonObject["message"] as? JsonPrimitive)?.content
+            ?: error("response body has no message field: ${response.body()}")
 
     private fun dataOf(response: HttpResponse<String>) =
         Json.parseToJsonElement(response.body()).jsonObject["data"]?.jsonObject
@@ -184,6 +191,26 @@ class AuthWiringTest {
 
         assertEquals(401, response.statusCode())
         assertEquals(ErrorCode.BAD_CREDENTIALS, codeOf(response))
+    }
+
+    @Test
+    fun loginRouteWithMalformedJsonBodyReturns40001() {
+        // 行为 3.2 前半：JSON 语法畸形 → 路由内反序列化失败分支统一 40001，不落入兜底 50000
+        val response = postLoginRaw("""{"username":"admin","password":""")
+
+        assertEquals(400, response.statusCode())
+        assertEquals(ErrorCode.BAD_REQUEST, codeOf(response))
+        assertTrue(messageOf(response).contains("登录请求体格式错误"))
+    }
+
+    @Test
+    fun loginRouteWithFieldTypeMismatchReturns40001() {
+        // 行为 3.2 后半：字段类型错（username 传数字）同样落在反序列化失败分支
+        val response = postLoginRaw("""{"username":123,"password":"x"}""")
+
+        assertEquals(400, response.statusCode())
+        assertEquals(ErrorCode.BAD_REQUEST, codeOf(response))
+        assertTrue(messageOf(response).contains("登录请求体格式错误"))
     }
 
     @Test
