@@ -4,7 +4,9 @@ import com.caizhixing.feedback.model.ApiException
 import com.caizhixing.feedback.model.ErrorCode
 import com.caizhixing.feedback.model.Feedback
 import com.caizhixing.feedback.model.FeedbackCategory
+import com.caizhixing.feedback.model.FeedbackListFilter
 import com.caizhixing.feedback.model.FeedbackStatus
+import com.caizhixing.feedback.model.dto.FeedbackListItem
 import com.caizhixing.feedback.model.dto.SubmitFeedbackRequest
 import com.caizhixing.feedback.model.dto.SubmitFeedbackResponse
 import com.caizhixing.feedback.repository.FeedbackRepository
@@ -22,7 +24,7 @@ import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 
 /**
- * 行为 4.1/4.3/4.4/4.5：fake Repository + 注入 Clock；
+ * 行为 4.1/4.3/4.4/4.5 + 行为 5.7（issue #5 追加 list）：fake Repository + 注入 Clock；
  * 限流路径直接复用 #2 的 FixedWindowRateLimiter（1/分 + 5/天，同实例两窗口）。
  */
 class FeedbackServiceTest {
@@ -45,6 +47,9 @@ class FeedbackServiceTest {
         val inserted = mutableListOf<Pair<Long, Feedback>>()
         private var nextId = 42L
 
+        val listQueries = mutableListOf<Triple<FeedbackListFilter, Int, Int>>()
+        var listResult: Pair<Long, List<Feedback>> = 0L to emptyList()
+
         override suspend fun insert(feedback: Feedback): Long {
             val id = nextId++
             inserted += id to feedback
@@ -52,6 +57,15 @@ class FeedbackServiceTest {
         }
 
         override suspend fun findById(id: Long): Feedback? = inserted.firstOrNull { it.first == id }?.second
+
+        override suspend fun findTotalAndList(
+            filter: FeedbackListFilter,
+            page: Int,
+            pageSize: Int,
+        ): Pair<Long, List<Feedback>> {
+            listQueries += Triple(filter, page, pageSize)
+            return listResult
+        }
     }
 
     private class AllowAllRateLimiter : RateLimiter {
@@ -188,5 +202,74 @@ class FeedbackServiceTest {
         assertEquals("title: 必填", error.message)
         assertEquals(0, repository.inserted.size)
         assertEquals(0, limiter.keys.size)
+    }
+
+    // 行为 5.7：service 全字段委托 filter（fake repo 断言收到的 filter）；page 超界 → 空 list + 真实 total；
+    // 附带断言领域模型 → DTO 映射（camelCase、时间 "yyyy-MM-dd HH:mm:ss"、status Int、category 枚举名）
+    @Test
+    fun listDelegatesFilterAndHandlesPageOverflow() = runBlocking {
+        val clock = MutableClock(Instant.parse("2026-11-04T04:00:00Z"))
+        val repository = FakeFeedbackRepository()
+        val service = FeedbackService(repository, AllowAllRateLimiter(), clock)
+        val sample = Feedback(
+            id = 42L,
+            title = "启动崩溃",
+            content = "点击图标后闪退",
+            category = FeedbackCategory.BUG,
+            appName = "launcher",
+            appVersion = "1.2.3",
+            deviceModel = null,
+            osVersion = "15",
+            deviceId = "device-1",
+            contact = null,
+            status = FeedbackStatus.DONE,
+            images = emptyList(),
+            createdAt = LocalDateTime.of(2026, 11, 4, 12, 0, 0),
+            updatedAt = LocalDateTime.of(2026, 11, 4, 13, 30, 5),
+        )
+        repository.listResult = 3L to listOf(sample)
+        val filter = FeedbackListFilter(
+            appName = "launcher",
+            appVersion = "1.2.3",
+            categories = listOf(FeedbackCategory.BUG, FeedbackCategory.SUGGESTION),
+            status = FeedbackStatus.DONE,
+            startAt = LocalDateTime.of(2026, 11, 1, 0, 0, 0),
+            endAt = LocalDateTime.of(2026, 11, 30, 23, 59, 59),
+            keyword = "崩溃",
+        )
+
+        val response = service.list(filter, page = 2, pageSize = 10)
+
+        // 全字段委托：repo 收到的 filter 与调用完全一致（data class 逐字段相等），分页参数原样透传
+        assertEquals(listOf(Triple(filter, 2, 10)), repository.listQueries)
+        assertEquals(3L, response.total)
+        assertEquals(2, response.page)
+        assertEquals(10, response.pageSize)
+        val item: FeedbackListItem = response.list.single()
+        assertEquals(42L, item.id)
+        assertEquals("启动崩溃", item.title)
+        assertEquals("点击图标后闪退", item.content)
+        assertEquals("BUG", item.category)
+        assertEquals("launcher", item.appName)
+        assertEquals("1.2.3", item.appVersion)
+        assertEquals(null, item.deviceModel)
+        assertEquals("15", item.osVersion)
+        assertEquals("device-1", item.deviceId)
+        assertEquals(null, item.contact)
+        assertEquals(1, item.status)
+        assertEquals(emptyList<String>(), item.images)
+        assertEquals("2026-11-04 12:00:00", item.createdAt)
+        assertEquals("2026-11-04 13:30:05", item.updatedAt)
+
+        // page 超界：repo（真实实现 offset 越界自然无行）返回空 list，service 透传真实 total 不二次加工
+        repository.listResult = 3L to emptyList()
+        val overflowFilter = filter.copy(keyword = null)
+        val overflow = service.list(overflowFilter, page = 99, pageSize = 20)
+
+        assertEquals(listOf(Triple(filter, 2, 10), Triple(overflowFilter, 99, 20)), repository.listQueries)
+        assertEquals(3L, overflow.total)
+        assertEquals(emptyList<FeedbackListItem>(), overflow.list)
+        assertEquals(99, overflow.page)
+        assertEquals(20, overflow.pageSize)
     }
 }
