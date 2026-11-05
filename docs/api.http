@@ -1,0 +1,55 @@
+### 用法
+### 1) 先启动服务：.\scripts\mysql-local.cmd -Action start  →  .\scripts\run-local.cmd
+### 2) 执行下面的「登录」，把返回的 data.token 粘到 @token
+### 3) 依次执行其余请求。可直接用 VS Code 的 REST Client 插件，或 JetBrains 的 HTTP Client
+
+@host = http://127.0.0.1:8080
+@token = 粘贴登录返回的 data.token
+
+### ========== 1. 管理员登录（无需 token）==========
+POST {{host}}/api/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "admin123"
+}
+
+### ========== 2. 提交反馈（App 端匿名，无需 token）==========
+POST {{host}}/api/feedback
+Content-Type: application/json
+
+{
+  "title": "启动页闪退",
+  "content": "打开应用后白屏 2 秒然后退出，必现",
+  "category": "BUG",
+  "appName": "Launcher+",
+  "appVersion": "1.2.0",
+  "deviceId": "local-dev-device-001",
+  "deviceModel": "Pixel 7",
+  "osVersion": "Android 15",
+  "contact": "dev@example.com"
+}
+
+### ========== 3. 反馈列表（管理员，分页）==========
+GET {{host}}/api/feedback/list?page=1&pageSize=20
+Authorization: Bearer {{token}}
+
+### ========== 3.1 列表筛选：分类多选 + 状态 + 日期区间 + 关键字 ==========
+### category 值域：BUG / EXPERIENCE / SUGGESTION / OTHER（逗号分隔多选）
+### status：0=待处理 1=已完成；日期格式 yyyy-MM-dd（含端点全天，Asia/Shanghai）
+GET {{host}}/api/feedback/list?page=1&pageSize=20&category=BUG,SUGGESTION&status=0&startDate=2026-11-01&endDate=2026-11-05&keyword=闪退
+Authorization: Bearer {{token}}
+
+### ========== 4. 标记处理状态（status 仅 0 或 1）==========
+PUT {{host}}/api/feedback/1/status
+Authorization: Bearer {{token}}
+Content-Type: application/json
+
+{
+  "status": 1
+}
+
+### ========== 5. 删除反馈 ==========
+DELETE {{host}}/api/feedback/1
+Authorization: Bearer {{token}}

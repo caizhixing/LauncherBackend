@@ -17,3 +17,14 @@ Thumbs.db
 
 # local overrides with real secrets
 *.local.conf
+
+# 便携版 MySQL（scripts/mysql-local.ps1 使用的本地实例，含数据目录）
+.mysql/
+
+# 会话临时分析数据（本地调试产物，不入库）
+.tmp-*/
+
+# Web 前端（feedback-web-admin）构建产物与依赖
+web/node_modules/
+web/dist/
+web/coverage/
