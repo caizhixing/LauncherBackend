@@ -1,8 +1,9 @@
-// stores/useFeedbackList.ts —— 列表状态 + 读路径动作（issue #15 / PRD §4 任务 3）
+// stores/useFeedbackList.ts —— 列表状态 + 读/写路径动作（issue #15 读路径 + issue #16 写路径）
 // api 经构造参数注入（fake 单测，PRD §5）；URL 同步由视图层接线，本模块不感知路由
 import { reactive } from 'vue'
 import { ApiError } from '../api/http'
-import type { FeedbackListItem, FeedbackListResponse } from '../api/types'
+import { ErrorCode } from '../api/types'
+import type { FeedbackListItem, FeedbackListResponse, FeedbackStatus } from '../api/types'
 import { DEFAULT_QUERY, PAGE_SIZE_OPTIONS, hasActiveFilters } from '../url/feedbackQuery'
 import type { FeedbackQueryState } from '../url/feedbackQuery'
 
@@ -11,9 +12,11 @@ export const DEBOUNCE_MS = 300
 
 export const FALLBACK_ERROR_MESSAGE = '服务暂不可用，请稍后重试'
 
-// 最小结构接口：issue #4 将在 api/feedback.ts 追加写方法，store 只依赖读路径，不受其影响
+// 最小结构接口：与 api/feedback.ts 冻结签名一致（list 为 #15 交付，update/delete 为 #16 追加）
 export interface FeedbackListApi {
   listFeedback(query: FeedbackQueryState): Promise<FeedbackListResponse>
+  updateFeedbackStatus(id: number, status: FeedbackStatus): Promise<void>
+  deleteFeedback(id: number): Promise<void>
 }
 
 export interface FeedbackListState {
@@ -44,6 +47,41 @@ function cloneQuery(query: FeedbackQueryState): FeedbackQueryState {
     ...query,
     categories: query.categories !== undefined ? [...query.categories] : undefined,
   }
+}
+
+// —— 写路径（issue #16）——
+
+// 40401 专案文案（§2.6）：目标反馈已被删除 → 提示 + 刷新列表
+export const FEEDBACK_GONE_MESSAGE = '这条反馈已被删除'
+// 42900/50000/网络等其余写失败文案（§2.6）：本地状态不变，仅提示
+export const WRITE_FAILED_MESSAGE = '操作失败，请稍后重试'
+
+// 行为 4.2（纯函数）：删除后下一页页码 —— 当前页删空且 page>1 → 回上一页；否则留在当前页
+export function nextPageAfterDelete(page: number, remainingCount: number): number {
+  return remainingCount === 0 && page > 1 ? page - 1 : page
+}
+
+// 写动作结果（UI 层据此提示，store 不感知 Element Plus）：
+// - ok：写成功，列表已按 D11 / 行为 4.2 重拉
+// - cancelled：用户取消确认，未发请求（行为 4.3）
+// - unauthorized：40100/40101，共享 HttpClient 已触发全局 onUnauthorized 跳登录（行为 4.6），无需再提示
+// - notFound：40401，列表已刷新，message 即提示文案（行为 4.4）
+// - failed：其余失败，本地状态不变（§2.6）
+export type WriteOutcome =
+  | { ok: true }
+  | { ok: false; kind: 'cancelled' }
+  | { ok: false; kind: 'unauthorized' }
+  | { ok: false; kind: 'notFound'; message: string }
+  | { ok: false; kind: 'failed'; message: string }
+
+// 「当前实例」登记（issue #16）：FeedbackListView 创建 store，FeedbackTable 的行内写动作需要
+// 同一实例，而视图接线不在本 issue 触碰范围 → 表格经 activeFeedbackListStore() 取当前路由页内
+// 最新创建的实例（父组件 setup 先于子组件执行，读到的一定是所属视图的 store）。
+// dispose 时自清避免悬挂引用；集成期若改为视图显式传 store prop，本机制可整体移除。
+let activeInstance: FeedbackListStore | null = null
+
+export function activeFeedbackListStore(): FeedbackListStore | null {
+  return activeInstance
 }
 
 export function useFeedbackList(api: FeedbackListApi) {
@@ -94,7 +132,22 @@ export function useFeedbackList(api: FeedbackListApi) {
     }, DEBOUNCE_MS)
   }
 
-  return {
+  // 写失败分流（§2.6 / 行为 4.4 / 4.6）：40100/40101 已由共享 http 层统一 onUnauthorized，
+  // 此处只归类不动作；40401 → 刷新列表（该行已消失）；其余 → 本地状态不变
+  function classifyWriteError(error: unknown): WriteOutcome {
+    if (error instanceof ApiError) {
+      if (error.code === ErrorCode.UNAUTHORIZED || error.code === ErrorCode.TOKEN_EXPIRED) {
+        return { ok: false, kind: 'unauthorized' }
+      }
+      if (error.code === ErrorCode.NOT_FOUND) {
+        void fetchNow()
+        return { ok: false, kind: 'notFound', message: FEEDBACK_GONE_MESSAGE }
+      }
+    }
+    return { ok: false, kind: 'failed', message: WRITE_FAILED_MESSAGE }
+  }
+
+  const store = {
     state,
     hasActiveFilters(): boolean {
       return hasActiveFilters(state.query)
@@ -134,11 +187,45 @@ export function useFeedbackList(api: FeedbackListApi) {
     retry(): void {
       void fetchNow()
     },
+    // 行为 4.1：状态切换双向 0↔1 调 PUT；成功后重拉当前页（D11：写接口 data:null，拿不到新 updatedAt）
+    async toggleStatus(item: FeedbackListItem): Promise<WriteOutcome> {
+      const target: FeedbackStatus = item.status === 0 ? 1 : 0
+      try {
+        await api.updateFeedbackStatus(item.id, target)
+      } catch (error) {
+        return classifyWriteError(error)
+      }
+      await fetchNow()
+      return { ok: true }
+    },
+    // 行为 4.3：确认弹窗经入参注入（UI 传 ElMessageBox 封装、测试传 fake，才可断言「未确认不发 DELETE」）；
+    // 成功后按行为 4.2 规则重拉（当前页删空且 page>1 → 回上一页）
+    async remove(item: FeedbackListItem, confirm: () => Promise<boolean>): Promise<WriteOutcome> {
+      const confirmed = await confirm().catch(() => false)
+      if (!confirmed) return { ok: false, kind: 'cancelled' }
+      try {
+        await api.deleteFeedback(item.id)
+      } catch (error) {
+        return classifyWriteError(error)
+      }
+      const remaining = state.list.filter((row) => row.id !== item.id).length
+      const nextPage = nextPageAfterDelete(state.query.page, remaining)
+      if (nextPage !== state.query.page) {
+        state.query = { ...cloneQuery(state.query), page: nextPage }
+      }
+      await fetchNow()
+      return { ok: true }
+    },
     dispose(): void {
       cancelDebounce()
       requestSeq += 1 // 在途请求作废，防止卸载后写状态
+      // 以 state 身份比对代替 store 自引用（避免 ReturnType 别名循环推导）；state 与 store 一一对应
+      if (activeInstance !== null && activeInstance.state === state) activeInstance = null
     },
   }
+
+  activeInstance = store
+  return store
 }
 
 export type FeedbackListStore = ReturnType<typeof useFeedbackList>

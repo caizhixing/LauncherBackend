@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../api/http'
-import type { FeedbackListResponse, FeedbackListItem } from '../api/types'
+import type { FeedbackListResponse, FeedbackListItem, FeedbackStatus } from '../api/types'
 import { DEFAULT_QUERY } from '../url/feedbackQuery'
 import type { FeedbackQueryState } from '../url/feedbackQuery'
-import { DEBOUNCE_MS, useFeedbackList } from './useFeedbackList'
+import { DEBOUNCE_MS, useFeedbackList, activeFeedbackListStore } from './useFeedbackList'
 import type { FeedbackListApi } from './useFeedbackList'
 
-// 行为 3.3 / 3.4 / 3.6（PRD feedback-web-admin §4 任务 3）：fake api 注入 + fake timers
+// 行为 3.3 / 3.4 / 3.6（PRD feedback-web-admin §4 任务 3）+ 行为 4.1-4.4（任务 4）：fake api 注入 + fake timers
 const ITEM: FeedbackListItem = {
   id: 12,
   title: '启动闪退',
@@ -30,18 +30,40 @@ type Respond = (query: FeedbackQueryState, callIndex: number) => Promise<Feedbac
 function makeFakeApi(respond: Respond = async () => pageData()): {
   api: FeedbackListApi
   calls: FeedbackQueryState[]
+  order: string[] // 'list' | 'update:<id>:<status>' | 'delete:<id>'：行为 4.1 断言调用序
   setRespond: (fn: Respond) => void
+  failUpdateWith: (error: unknown) => void
+  failDeleteWith: (error: unknown) => void
 } {
   const calls: FeedbackQueryState[] = []
+  const order: string[] = []
   let impl = respond
+  let updateError: unknown = null
+  let deleteError: unknown = null
   const api: FeedbackListApi = {
     listFeedback(query) {
       // JSON 克隆：记录发起请求那一刻的快照，隔离后续状态变更
       calls.push(JSON.parse(JSON.stringify(query)) as FeedbackQueryState)
+      order.push('list')
       return impl(query, calls.length)
     },
+    async updateFeedbackStatus(id: number, status: FeedbackStatus): Promise<void> {
+      order.push(`update:${id}:${status}`)
+      if (updateError !== null) throw updateError
+    },
+    async deleteFeedback(id: number): Promise<void> {
+      order.push(`delete:${id}`)
+      if (deleteError !== null) throw deleteError
+    },
   }
-  return { api, calls, setRespond: (fn) => (impl = fn) }
+  return {
+    api,
+    calls,
+    order,
+    setRespond: (fn) => (impl = fn),
+    failUpdateWith: (error) => (updateError = error),
+    failDeleteWith: (error) => (deleteError = error),
+  }
 }
 
 describe('UseFeedbackListTest', () => {
@@ -249,5 +271,107 @@ describe('UseFeedbackListTest', () => {
     expect(store.emptyStateText()).toBe('没有符合条件的反馈')
     store.clearFilters()
     expect(store.hasActiveFilters()).toBe(false)
+  })
+
+  // —— issue #16 写路径（行为 4.1/4.2/4.3/4.4）——
+
+  it('toggleStatusReloadsPage：双向 0↔1 调 PUT，成功后重拉当前页（调用序）', async () => {
+    const { api, calls, order } = makeFakeApi()
+    const store = useFeedbackList(api)
+    store.applyQuery({ page: 2, pageSize: 20, keyword: '闪退' })
+    await vi.advanceTimersByTimeAsync(0)
+
+    const pending: FeedbackListItem = { ...ITEM, status: 0 }
+    expect(await store.toggleStatus(pending)).toEqual({ ok: true })
+    expect(order).toEqual(['list', 'update:12:1', 'list'])
+    expect(calls[1]).toEqual({ page: 2, pageSize: 20, keyword: '闪退' }) // D11：重拉当前页
+
+    const done: FeedbackListItem = { ...ITEM, id: 13, status: 1 }
+    await store.toggleStatus(done)
+    expect(order[3]).toBe('update:13:0') // 反向 1→0 亦触发（双向）
+  })
+
+  it('deleteRequiresConfirmAndReloads：未确认（含 confirm 抛出）不发 DELETE；确认后按 4.2 回退页码', async () => {
+    const { api, calls, order } = makeFakeApi(async () => ({ total: 21, page: 2, pageSize: 20, list: [ITEM] }))
+    const store = useFeedbackList(api)
+    store.applyQuery({ page: 2, pageSize: 20 })
+    await vi.advanceTimersByTimeAsync(0)
+
+    expect(await store.remove(ITEM, async () => false)).toEqual({ ok: false, kind: 'cancelled' })
+    expect(await store.remove(ITEM, () => Promise.reject(new Error('closed')))).toEqual({ ok: false, kind: 'cancelled' })
+    expect(order).toEqual(['list']) // 未确认：不 DELETE、不刷新
+
+    // 当前页只剩这一条（删空）且 page>1 → 回第 1 页再拉（行为 4.2）
+    expect(await store.remove(ITEM, async () => true)).toEqual({ ok: true })
+    expect(order).toEqual(['list', 'delete:12', 'list'])
+    expect(store.state.query.page).toBe(1)
+    expect(calls[1]).toEqual({ page: 1, pageSize: 20 })
+  })
+
+  it('deleteRequiresConfirmAndReloads：当前页未删空 → 页码不变重拉当前页', async () => {
+    const other: FeedbackListItem = { ...ITEM, id: 13 }
+    const { api, calls } = makeFakeApi(async () => ({ total: 21, page: 2, pageSize: 20, list: [ITEM, other] }))
+    const store = useFeedbackList(api)
+    store.applyQuery({ page: 2, pageSize: 20 })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(await store.remove(other, async () => true)).toEqual({ ok: true })
+    expect(store.state.query.page).toBe(2)
+    expect(calls[1].page).toBe(2)
+  })
+
+  it('notFoundRefreshes：40401 → 「这条反馈已被删除」+ 刷新；其余失败本地状态不变', async () => {
+    const { api, order, failUpdateWith } = makeFakeApi()
+    const store = useFeedbackList(api)
+    store.applyQuery(DEFAULT_QUERY)
+    await vi.advanceTimersByTimeAsync(0)
+    expect(store.state.list).toEqual([ITEM])
+
+    failUpdateWith(new ApiError(40401, '反馈不存在'))
+    expect(await store.toggleStatus(ITEM)).toEqual({ ok: false, kind: 'notFound', message: '这条反馈已被删除' })
+    await vi.advanceTimersByTimeAsync(0) // 40401 的刷新为异步触发
+    expect(order).toEqual(['list', 'update:12:1', 'list'])
+
+    // 42900 → 通用失败文案；不刷新、本地状态不变（§2.6）
+    failUpdateWith(new ApiError(42900, '稍后再试'))
+    const snapshot = JSON.stringify(store.state.list)
+    expect(await store.toggleStatus(ITEM)).toEqual({ ok: false, kind: 'failed', message: '操作失败，请稍后重试' })
+    expect(order).toEqual(['list', 'update:12:1', 'list', 'update:12:1'])
+    expect(JSON.stringify(store.state.list)).toBe(snapshot)
+
+    // 40100/40101 → 归类 unauthorized：全局 onUnauthorized 已由 http 层触发（行为 4.6），store 不再动作
+    failUpdateWith(new ApiError(40101, '过期'))
+    expect(await store.toggleStatus(ITEM)).toEqual({ ok: false, kind: 'unauthorized' })
+    expect(order).toEqual(['list', 'update:12:1', 'list', 'update:12:1', 'update:12:1'])
+  })
+
+  it('notFoundRefreshes：delete 40401 同样提示 + 刷新；非 ApiError 兜底 failed', async () => {
+    const { api, order, failDeleteWith } = makeFakeApi()
+    const store = useFeedbackList(api)
+    store.applyQuery(DEFAULT_QUERY)
+    await vi.advanceTimersByTimeAsync(0)
+
+    failDeleteWith(new ApiError(40401, '反馈不存在'))
+    expect(await store.remove(ITEM, async () => true)).toEqual({
+      ok: false,
+      kind: 'notFound',
+      message: '这条反馈已被删除',
+    })
+    await vi.advanceTimersByTimeAsync(0)
+    expect(order).toEqual(['list', 'delete:12', 'list'])
+
+    failDeleteWith(new Error('boom'))
+    expect(await store.remove(ITEM, async () => true)).toEqual({ ok: false, kind: 'failed', message: '操作失败，请稍后重试' })
+  })
+
+  it('activeFeedbackListStore：登记最新实例，dispose 自清（表格取实例入口）', () => {
+    const { api } = makeFakeApi()
+    const first = useFeedbackList(api)
+    expect(activeFeedbackListStore()).toBe(first)
+    const second = useFeedbackList(api)
+    expect(activeFeedbackListStore()).toBe(second)
+    second.dispose()
+    expect(activeFeedbackListStore()).toBeNull()
+    first.dispose() // 非 active 实例 dispose 不影响登记
+    expect(activeFeedbackListStore()).toBeNull()
   })
 })

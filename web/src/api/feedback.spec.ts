@@ -77,4 +77,43 @@ describe('FeedbackApiTest', () => {
     expect(error).toBeInstanceOf(ApiError)
     expect((error as ApiError).code).toBe(50000)
   })
+
+  // —— issue #16 写路径 ——
+
+  function makeWriteHttp(): {
+    http: HttpClient
+    captured: Array<{ method: 'PUT' | 'DELETE'; url: string; body?: unknown; options?: unknown }>
+  } {
+    const captured: Array<{ method: 'PUT' | 'DELETE'; url: string; body?: unknown; options?: unknown }> = []
+    const http: HttpClient = {
+      get: async (): Promise<null> => {
+        throw new Error('写路径测试不得调用 get')
+      },
+      post: async (): Promise<null> => {
+        throw new Error('写路径测试不得调用 post')
+      },
+      put: async (url: string, body?: unknown, options?: unknown): Promise<null> => {
+        captured.push({ method: 'PUT', url, body, options })
+        return null
+      },
+      delete: async (url: string, options?: unknown): Promise<null> => {
+        captured.push({ method: 'DELETE', url, options })
+        return null
+      },
+    }
+    return { http, captured }
+  }
+
+  it('updateFeedbackStatus → PUT /api/feedback/{id}/status，body { status }（docs/api.http §4）', async () => {
+    const { http, captured } = makeWriteHttp()
+    await createFeedbackApi(http).updateFeedbackStatus(12, 1)
+    expect(captured).toEqual([{ method: 'PUT', url: '/api/feedback/12/status', body: { status: 1 }, options: undefined }])
+  })
+
+  it('deleteFeedback → DELETE /api/feedback/{id}；成功 data=null 吞掉返回值', async () => {
+    const { http, captured } = makeWriteHttp()
+    const result = await createFeedbackApi(http).deleteFeedback(12)
+    expect(result).toBeUndefined() // 冻结签名 Promise<void>：data=null 不外泄
+    expect(captured).toEqual([{ method: 'DELETE', url: '/api/feedback/12', options: undefined }])
+  })
 })
