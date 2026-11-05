@@ -15,8 +15,9 @@
 
 - 技术栈（已冻结，见 `DECISIONS.md #Web 管理端技术栈选型`）：Vite + Vue 3 + TypeScript +
   Element Plus + vue-router，SPA，源码在仓库 `web/`，开发期 Vite 代理 `/api`，生产 Nginx 同源反代。
-- 视觉基线：**Element Plus 默认主题**，仅以 `web/src/styles/tokens.css` 覆盖中文字体栈与表格密度；
-  不做定制设计系统、不引入 Tailwind / iconfont CDN（图标用 `@element-plus/icons-vue`）。
+- 视觉基线：**Element Plus 默认主题**，`web/src/styles/tokens.css` 仅覆盖中文字体栈；表格密度走
+  Element Plus 官方全局尺寸（main.ts 装配 `size: 'small'`）；不自造 `--el-*` 令牌、不写组件类选择器
+  覆写、不引入 Tailwind / iconfont CDN（图标用 `@element-plus/icons-vue`）。见文末变更记录 2026-11-05-1。
 - 成功标准：管理员在浏览器完成全部日常操作；§4 行为清单全绿。
 
 Out-of-scope：统计图表、批量操作、CSV 导出、回复/备注、图片（`images` 恒空数组，UI 不展示）、
@@ -46,7 +47,7 @@ web/                            # Vue SPA 根（Gradle 侧零改动，不进任�
 ├─ vite.config.ts               # server.proxy['/api'] → http://127.0.0.1:8080
 ├─ src/
 │  ├─ main.ts / App.vue / router.ts
-│  ├─ styles/tokens.css         # 仅：中文字体栈、表格密度覆盖（--el-* 变量）
+│  ├─ styles/tokens.css         # 仅：中文字体栈覆盖（表格密度走 EP 官方全局 size，见 §1）
 │  ├─ api/{types.ts, http.ts, auth.ts, feedback.ts}
 │  ├─ auth/{session.ts, guard.ts}
 │  ├─ url/feedbackQuery.ts      # URL ↔ 筛选状态 编解码纯函数
@@ -221,7 +222,8 @@ export const TOKEN_STORAGE_KEY = 'feedback_admin_token'
   —— `GuardTest`（纯函数）
 - 行为 1.7：`session` 的 set/get/clear 读写 `TOKEN_STORAGE_KEY`，clear 后 get 返回 null
   —— `SessionTest`
-- 行为 1.8：`tokens.css` 仅覆盖中文字体栈与表格密度（无自造设计系统）；两占位视图可被路由渲染
+- 行为 1.8：`tokens.css` 仅覆盖中文字体栈（无自造设计系统）；表格密度由 main.ts 的
+  `app.use(ElementPlus, { size: 'small' })` 承载（EP 官方全局尺寸机制）；两占位视图可被路由渲染
   —— 静态检查
 
 ### 任务 2：登录页
@@ -330,3 +332,16 @@ blocked 即时上报、label 状态机主 agent 单写、review verdict 固定�
 - 一次性联网 `npm install` 生成 lock 并验证三命令绿（D14；需用户当场授权联网，此后全部离线）
 - 引导验收：`npm run typecheck && npm run build && npm run test` 三绿 + `web/dist/index.html`
   产物存在 + 代理与 `.gitignore` 就位
+
+## 变更记录
+
+### 2026-11-05-1 · 行为 1.8 / §2.2 tokens.css 密度机制修订（用户确认，方案 A）
+
+- 背景：PR #17 两轮 review 均卡在「以 `--el-*` 变量覆盖表格密度」——实测 element-plus 2.13
+  theme-chalk 未暴露表格 padding CSS 变量，原文在实现层不可满足（worker grep 源码证实，
+  reviewer 认可该事实基础）。
+- 修订：tokens.css 只保留中文字体栈覆盖；表格密度改由 main.ts
+  `app.use(ElementPlus, { size: 'small' })`（EP 官方全局尺寸机制）承载；禁止自造 `--el-*` 令牌
+  与组件类选择器 padding 覆写。issue #13 触碰范围相应允许 main.ts 的 size 装配行。
+- 影响面：纯实现机制替换，无用户可见行为变化（列表密度诉求不变）；D 决策不受影响；
+  契约（后端接口/前端冻结代码签名）零触碰。受影响 issue：#13（行为 1.8）。
