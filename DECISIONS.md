@@ -2,6 +2,59 @@
 
 > 需求变更前先查本文件。每条记：日期、背景、选定方案、被否掉的备选。
 
+## #Web 管理端技术栈选型（2026-11-05，用户确认）
+
+- 背景：后端 v1 已交付，但管理端 Web 前端是一期 out-of-scope（`docs/prd/feedback-backend.md` §1），
+  管理员目前只能用 `docs/api.http` 手工查反馈，无法日常使用。
+- 选定：**独立 SPA —— Vite + Vue 3 + TypeScript + Element Plus**，源码放同仓 `web/`（后端 Gradle 侧零改动）；
+  开发期 Vite 代理 `/api` → `127.0.0.1:8080`，生产由 Nginx 同源反代 `web/dist`，**不启用 CORS**。
+- 备选否决：Ktor SSR + kotlinx.html + HTMX（零构建链、单产物，但表格/日期区间/多选/对话框全要手写，
+  二期加图片、回复、统计时会退化成自造轮子）；Compose Multiplatform Web/Wasm（复用 Compose 技能很诱人，
+  但后台是长表单 + 长列表 + 中文 IME + 大段文本选择，DOM 生态差距与 Wasm 工具链成本不划算）；
+  Next/Nuxt SSR（无 SEO/首屏诉求，白多一个 Node 进程要运维）；前端打进 fatJar（前端改一行要重打包后端，
+  静态缓存头自管）。
+- 关键实测事实：`install(CORS)` 当前只 `allowHeader(ContentType)`，而 Ktor 默认放行头只有
+  `Accept`/`Accept-Language`/`Content-Language`，**`Authorization` 不在其中** → 浏览器跨域带 Bearer 会在
+  预检被拒。同源部署（Vite proxy / Nginx 反代）即完全规避，无需改后端；若将来必须跨域，才补
+  `allowHeader(HttpHeaders.Authorization)`（非契约变更）。
+- 影响：`npm install` 需一次性联网（同 #依赖一次性联网），之后离线可构建；本机 node v24.18.0 /
+  npm 11.16.0 已就绪。`web/` 与 `node_modules/` 需补进 `.gitignore`（P0 落地时处理）。
+- 已确认（2026-11-05）：`docs/prd/feedback-web-admin.md` 转 **frozen**；§6 决策 D1–D18 用户整批按推荐
+  确认（要点：token 用 localStorage 7 天免登；筛选即时生效 + 300ms 防抖 + 回第 1 页；deviceId/contact
+  详情全量 + 复制、列表不显示；删除普通二次确认；状态文案「待处理/已完成」并同步修正 `docs/api.http`
+  注释口径；vitest 仅纯函数/store 层；worker 不联调、阶段 5 统一手工冒烟；模型沿用本文件 #模型选型；
+  URL 非法参数回默认值）。
+- 前端交付走 multi-agent-pr-flow：主 agent 在 main 提交 web/ 工程引导（构建系统 + lock + 一次联网
+  `npm install`，业务代码零行），业务代码 4 issue 3 波 fan-out（W1{契约+http+守卫} →
+  W2{登录页, 列表读路径} → W3{写路径+详情}）；前端验证基线 = `typecheck`+`build`+`test`，不跑 Gradle；
+  全部 issue 禁碰 `src/main/kotlin/` 与后端构建文件。
+
+## #本地开发数据库（便携 MySQL，2026-11-04）
+
+- 日期：2026-11-04
+- 背景：本机无 MySQL 实例（3306 无监听、无 Program Files\MySQL）、无管理员权限；后端接口依赖
+  MySQL 8（`schema.sql` 的 JSON 列 + utf8mb4），无库时只能验证到「登录可用、反馈接口 50000」。
+- 选定：MySQL 8.0.28 `winx64.zip` 解压到仓库 `.mysql/mysql-8.0.28-winx64/`，数据目录 `.mysql/data/`，
+  配置 `.mysql/my.ini`（port 3306、bind 127.0.0.1、utf8mb4、`default-time-zone='+08:00'`、mysqlx 关闭）；
+  不注册 Windows 服务、不写注册表，`scripts/mysql-local.ps1` 提供 init/start/stop/status；
+  root 口令 `123456`、库 `feedback`，仅本机开发用。
+- 被否掉的备选：`choco install mysql` / `winget install Oracle.MySQL`（需管理员，且往 ProgramData 写系统级文件）；
+  Docker Desktop（本机未安装，需 WSL，体积更大）；MariaDB 便携版（JSON 语义与 PRD「MySQL 8」契约不符）。
+- 影响：`.mysql/` 已 gitignore，删目录即卸载；实例约 1.0 GB；**不是服务，开机不自启**，重启电脑后需
+  `.\scripts\mysql-local.ps1 -Action start`；`run-local.ps1` 的 `DbPassword` 默认值随之为 `123456`。
+- 附注（维护坑）：PowerShell 5.1 下脚本必须以 **UTF-8 BOM** 保存，否则中文串被按 GBK 解析导致语法错误；
+  `Get-NetTCPConnection` 在受限环境会漏报在监听的端口，端口探测改用 `TcpClient`；`mysqld` 由
+  `Win32_Process.Create` 启动以脱离父 shell（沙箱内该调用被拒时退回 `Start-Process`）。
+- 附注（执行策略）：本机默认执行策略**拒绝未签名的 .ps1**（`Get-ExecutionPolicy`/注册表均报
+  `RemoteSigned`，但连 C: 临时目录里新建的脚本都报"未对文件进行数字签名"，`-ExecutionPolicy Bypass`
+  可放行），根因疑在机器级策略/CI 层，未定位到可改的 scope。因此三支脚本各配一个 `.cmd` 包装
+  （`scripts/*.cmd`，内部 `powershell -NoProfile -ExecutionPolicy Bypass -File`），不改系统策略。
+  `.cmd` 内注释必须纯 ASCII：cmd 按 OEM 代码页读文件，UTF-8 中文注释会被当成命令执行。
+- 附注（TEMP 不可写）：本机用户 TEMP（`C:\Users\…\AppData\Local\Temp`）对某些进程不可写，
+  mysqld 首次启动曾因此失败：`[InnoDB] Unable to create temporary file inside "…\Temp"; errno: 13`
+  → `my.ini` 增加 `tmpdir=E:/work/LauncehrBackend/.mysql/tmp`（脚本在 init/start 时自动建目录），
+  不再依赖系统 TEMP。同类报错优先查 `mysqld.err` 最后一条 `[ERROR]`，别只看"60 秒未监听"。
+
 ## #验收与 PRD 外决策追认（阶段 5 终门）
 
 - 日期：2026-11-04（用户拍板：验收通过）
