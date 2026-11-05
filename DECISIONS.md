@@ -2,6 +2,26 @@
 
 > 需求变更前先查本文件。每条记：日期、背景、选定方案、被否掉的备选。
 
+## #Web 管理端前端交付（multi-agent-pr-flow，2026-11-05）
+
+- 交付：4 issue（#13-#16）3 波（W1{契约+http+守卫} → W2{登录页, 列表读路径} 并行 → W3{写路径+详情}），
+  4 PR（#17/#18/#19/#20）全部 review pass 后按序合并；集成门禁 typecheck/build/test 三绿
+  （128/128），后端文件零改动（git diff 核对 src/ 与构建文件 = 0）。npm 依赖 173 包锁定于
+  web/package-lock.json（引导期一次联网安装，此后 worktree 全程 `npm install --offline`）。
+- 契约修订 1 次（PRD 变更记录 2026-11-05-1）：行为 1.8「--el-* 变量覆盖表格密度」在 EP 2.13
+  无官方变量可选（worker grep theme-chalk 证实），改为 main.ts `app.use(ElementPlus, { size: 'small' })`
+  官方全局尺寸，tokens.css 仅留中文字体栈。用户拍板方案 A；评审循环按修订后契约重新计数。
+- 契约升级 1 次（PR#18 r1，contract_touched=yes）：worker 把冻结签名 login(req) 改为 login(http, req)
+  求测试注入。用户裁决方案 A：恢复冻结签名，PRD 不动；模式对齐 issue-15 的 createFeedbackApi 工厂注入。
+- worker 实现层决策（随终验收追认）：无 token 短路在 onUnauthorized 后补抛 ApiError(40100)（防调用方
+  误判成功）；routeGuard returnUrl 仅转义 &/#；login data=null 归一 ApiError(50000)；**表格与详情抽屉
+  经 store 模块「当前实例登记」共享同一实例**（视图文件不在 #16 触碰范围所致；集成期可零行为损失
+  换成显式 prop 传递，二期顺手做）；web/scripts/with-temp.mjs 重定向 TEMP 规避本机 esbuild 构建坑。
+- 流程指标：合并率 4/4；返工 PR17×2（含契约修订重置）、PR18×1、PR19×1、PR20×0；blocked 0；
+  空断言打回 0（assertion_quality 全 ok）；设计内人介入 3 次（PRD 定稿、密度契约修订、PR18 契约裁决）。
+- 环境：git 代理实配为 127.0.0.1:7900（7897 已失效，mihomo 实际监听口）；mihomo 另有 7874 为
+  内部 API 口不可作代理。
+
 ## #Web 管理端技术栈选型（2026-11-05，用户确认）
 
 - 背景：后端 v1 已交付，但管理端 Web 前端是一期 out-of-scope（`docs/prd/feedback-backend.md` §1），
