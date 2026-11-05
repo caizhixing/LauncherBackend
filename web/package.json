@@ -1,0 +1,27 @@
+{
+  "name": "feedback-web-admin",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "typecheck": "vue-tsc --noEmit",
+    "build": "node scripts/with-temp.mjs vue-tsc --noEmit && node scripts/with-temp.mjs vite build",
+    "test": "vitest run",
+    "test:coverage": "node scripts/with-temp.mjs vitest run --coverage"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.1",
+    "element-plus": "^2.13.1",
+    "vue": "^3.5.22",
+    "vue-router": "^4.6.4"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^6.0.4",
+    "@vitest/coverage-v8": "^3.2.4",
+    "typescript": "~5.9.3",
+    "vite": "^7.1.9",
+    "vitest": "^3.2.4",
+    "vue-tsc": "^3.1.8"
+  }
+}
