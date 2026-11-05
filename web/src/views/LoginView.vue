@@ -1,10 +1,10 @@
 <script setup lang="ts">
 // 登录页（PRD §2.5 登录段 / §4 任务 2，issue #14）：
-// 校验与错误文案 = api/auth.ts 纯函数；发请求经 router.ts 装配的共享 HttpClient（冻结接缝）
+// 校验与错误文案 = api/auth.ts 纯函数；发请求经 createAuthApi(http)（http 为 router.ts 共享 HttpClient，冻结接缝）
 import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Lock, User } from '@element-plus/icons-vue'
-import { createLoginFlow, REMEMBERED_USERNAME_KEY } from '../api/auth'
+import { createAuthApi, createLoginFlow, REMEMBERED_USERNAME_KEY } from '../api/auth'
 import { session } from '../auth/session'
 import { http } from '../router'
 
@@ -27,7 +27,7 @@ const {
   fieldErrors,
   submit: submitLogin,
 } = createLoginFlow({
-  http,
+  api: createAuthApi(http),
   setToken: session.set,
   navigate: (to) => {
     void router.push(to)

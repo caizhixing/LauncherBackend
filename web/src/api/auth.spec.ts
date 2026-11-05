@@ -5,14 +5,14 @@ import {
   DEFAULT_LOGIN_REDIRECT,
   LOGIN_URL,
   REMEMBERED_USERNAME_KEY,
+  createAuthApi,
   createLoginFlow,
-  login,
   loginCopy,
   validateLoginForm,
 } from './auth'
 
-// 行为 2.1–2.4（PRD feedback-web-admin §4 任务 2）：注入 fake HttpClient 与 fake session 接缝，
-// 不依赖网络与 DOM；流程状态（ref）在 node 环境直接断言
+// 行为 2.1–2.4（PRD feedback-web-admin §4 任务 2）：createAuthApi(fake http) + fake session 接缝，
+// 不依赖网络与 DOM；流程状态（ref）在 node 环境直接断言（注入模式对齐 issue #15 feedback.spec）
 
 interface PostCall {
   url: string
@@ -24,9 +24,15 @@ const LOGIN_OK = { token: 'jwt-ok', expiresIn: 604800 }
 
 function makeHttpFake(
   behavior: (call: PostCall) => Promise<unknown> = () => Promise.resolve(LOGIN_OK),
-): { http: Pick<HttpClient, 'post'>; calls: PostCall[] } {
+): { http: HttpClient; calls: PostCall[] } {
   const calls: PostCall[] = []
-  const http: Pick<HttpClient, 'post'> = {
+  const neverCalled = async (): Promise<null> => {
+    throw new Error('login 路径不得调用 get/put/delete')
+  }
+  const http: HttpClient = {
+    get: neverCalled,
+    put: neverCalled,
+    delete: neverCalled,
     post: (url, body, options) => {
       const call = { url, body, options }
       calls.push(call)
@@ -41,9 +47,10 @@ function makeFlow(
   returnUrl: string | null = null,
 ) {
   const { http, calls } = makeHttpFake(behavior)
+  const api = createAuthApi(http)
   const setToken = vi.fn()
   const navigate = vi.fn()
-  const flow = createLoginFlow({ http, setToken, navigate, returnUrl: () => returnUrl })
+  const flow = createLoginFlow({ api, setToken, navigate, returnUrl: () => returnUrl })
   return { flow, calls, setToken, navigate }
 }
 
@@ -91,13 +98,27 @@ describe('LoginCopyTest', () => {
 })
 
 describe('LoginFlowTest', () => {
-  it('冻结接缝：login() 走 HttpClient.post —— POST /api/login、请求体原样、auth:false（公开接口不带 Bearer）', async () => {
+  it('冻结接缝：login(req) 走 HttpClient.post —— POST /api/login、请求体原样、auth:false（公开接口不带 Bearer）', async () => {
     const { http, calls } = makeHttpFake()
-    await expect(login(http, { username: 'admin', password: 'pw' })).resolves.toEqual(LOGIN_OK)
+    await expect(createAuthApi(http).login({ username: 'admin', password: 'pw' })).resolves.toEqual(LOGIN_OK)
     expect(calls).toHaveLength(1)
     expect(calls[0].url).toBe('/api/login')
     expect(calls[0].body).toEqual({ username: 'admin', password: 'pw' })
     expect(calls[0].options).toEqual({ auth: false })
+  })
+
+  it('code===0 但 data=null → ApiError(50000) 兜底（与 feedback.ts 一致）', async () => {
+    const { http } = makeHttpFake(() => Promise.resolve(null))
+    const error = await createAuthApi(http)
+      .login({ username: 'admin', password: 'pw' })
+      .then(
+        () => {
+          throw new Error('expected the request to reject')
+        },
+        (e: unknown) => e,
+      )
+    expect(error).toBeInstanceOf(ApiError)
+    expect((error as ApiError).code).toBe(50000)
   })
 
   it('冻结常量：LOGIN_URL / REMEMBERED_USERNAME_KEY（D12）/ 默认跳转 /feedback（行为 2.3）', () => {
@@ -114,16 +135,20 @@ describe('LoginFlowTest', () => {
     expect(setToken).toHaveBeenCalledWith('jwt-ok')
     expect(navigate).toHaveBeenCalledTimes(1)
     expect(navigate).toHaveBeenCalledWith('/feedback')
+    // 时序断言：setToken(token) 必须先于 navigate —— 导航提前的回归不得通过（round-1 blocker 2）
+    expect(setToken.mock.invocationCallOrder[0]).toBeLessThan(navigate.mock.invocationCallOrder[0])
     expect(flow.error.value).toBeNull()
     expect(flow.submitting.value).toBe(false)
   })
 
   it('行为 2.3：returnUrl 优先于默认值，原样透传（含筛选 query）', async () => {
     const target = '/feedback?page=2&keyword=%E5%BC%82%E5%B8%B8'
-    const { flow, navigate } = makeFlow(undefined, target)
+    const { flow, setToken, navigate } = makeFlow(undefined, target)
     await expect(flow.submit({ username: 'admin', password: 'pw' })).resolves.toBe(true)
+    expect(setToken).toHaveBeenCalledWith('jwt-ok')
     expect(navigate).toHaveBeenCalledWith(target)
     expect(navigate).not.toHaveBeenCalledWith('/feedback')
+    expect(setToken.mock.invocationCallOrder[0]).toBeLessThan(navigate.mock.invocationCallOrder[0])
   })
 
   it('行为 2.1：表单不合法 → 本地拦截，不发请求、不 setToken、不跳转', async () => {
