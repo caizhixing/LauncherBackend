@@ -1,0 +1,10 @@
+/* styles/tokens.css —— PRD feedback-web-admin §1 视觉基线 + §4 行为 1.8
+   （变更记录 2026-11-05-1）：仅中文字体栈覆盖，走 --el-* 变量，不自造设计系统。
+   表格密度不由本文件承载，改由 main.ts app.use(ElementPlus, { size: 'small' })
+   （EP 官方全局尺寸机制）实现 */
+
+/* 1) 中文字体栈：覆盖 Element Plus 全局字体变量（--el-*） */
+:root {
+  --el-font-family:
+    system-ui, -apple-system, 'PingFang SC', 'HarmonyOS Sans SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+}
