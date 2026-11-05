@@ -1,0 +1,13 @@
+/* styles/tokens.css —— PRD feedback-web-admin §1 视觉基线 + §4 行为 1.8：
+   仅两处覆盖（中文字体栈、表格密度），全部走 Element Plus 自身变量/类作用域，不自造设计系统 */
+
+/* 1) 中文字体栈：覆盖 Element Plus 全局字体变量（--el-*） */
+:root {
+  --el-font-family:
+    system-ui, -apple-system, 'PingFang SC', 'HarmonyOS Sans SC', 'Microsoft YaHei', 'Segoe UI', sans-serif;
+}
+
+/* 2) 表格密度：单元格上下内边距收紧到 el-table small 档（4px 0），列表页更紧凑 */
+.el-table .el-table__cell {
+  padding: 4px 0;
+}

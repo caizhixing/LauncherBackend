@@ -1,13 +1,7 @@
 <script setup lang="ts">
-// 工程引导占位根组件（issue #1 起替换为 <RouterView/>）
+// 根组件仅承载路由出口；业务视图由 router.ts 的 /login、/feedback 提供（PRD §2.2）
 </script>
 
 <template>
-  <div class="bootstrap-placeholder">feedback-web-admin bootstrap</div>
+  <RouterView />
 </template>
-
-<style scoped>
-.bootstrap-placeholder {
-  font-family: system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif;
-}
-</style>
