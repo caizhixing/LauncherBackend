@@ -86,6 +86,7 @@ describe('FeedbackQueryTest', () => {
       ['startDate=乱码', { startDate: '乱码' }],
       ['endDate=2026-02-30（不存在的日历日）', { endDate: '2026-02-30' }],
       ['startDate=2026-1-1（格式不严）', { startDate: '2026-1-1' }],
+      ['startDate=2026-01-01&endDate=2025-12-31（跨年倒挂）', { startDate: '2026-01-01', endDate: '2025-12-31' }],
     ])('%s → 回默认值且不抛异常', (_name, params) => {
       expect(decodeQuery(params)).toEqual(DEFAULT_QUERY)
     })
@@ -95,6 +96,23 @@ describe('FeedbackQueryTest', () => {
         ...DEFAULT_QUERY,
         page: 4,
         status: 1,
+      })
+    })
+
+    it('倒挂区间 endDate < startDate：两个日期整体回默认（D18），其余字段保留', () => {
+      expect(decodeQuery({ startDate: '2026-01-10', endDate: '2026-01-09' })).toEqual(DEFAULT_QUERY)
+      expect(decodeQuery({ page: '2', keyword: '闪退', startDate: '2026-03-05', endDate: '2026-03-01' })).toEqual({
+        ...DEFAULT_QUERY,
+        page: 2,
+        keyword: '闪退',
+      })
+    })
+
+    it('同日区间 endDate === startDate 合法保留（PRD §2.3 结束不早于开始）', () => {
+      expect(decodeQuery({ startDate: '2026-01-10', endDate: '2026-01-10' })).toEqual({
+        ...DEFAULT_QUERY,
+        startDate: '2026-01-10',
+        endDate: '2026-01-10',
       })
     })
 

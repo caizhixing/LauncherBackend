@@ -88,6 +88,11 @@ export function decodeQuery(p: Record<string, string>): FeedbackQueryState {
   const rawPageSize = parsePositiveInt(p.pageSize)
   const pageSize = PAGE_SIZE_OPTIONS.find((option) => option === rawPageSize) ?? DEFAULT_QUERY.pageSize
   const status: FeedbackStatus | undefined = p.status === '0' ? 0 : p.status === '1' ? 1 : undefined
+  // 倒挂区间（endDate < startDate）按 D18 视为非法：两个日期整体回默认，不前传后端触发 40001（PRD §2.3「结束不早于开始」）。
+  // parseDate 已保证严格 yyyy-MM-dd，定长格式下字典序比较等价于日期比较
+  const rawStartDate = parseDate(p.startDate)
+  const rawEndDate = parseDate(p.endDate)
+  const inverted = rawStartDate !== undefined && rawEndDate !== undefined && rawEndDate < rawStartDate
   return {
     page,
     pageSize,
@@ -95,8 +100,8 @@ export function decodeQuery(p: Record<string, string>): FeedbackQueryState {
     appVersion: isFilled(p.appVersion) ? p.appVersion : undefined,
     categories: parseCategories(p.category),
     status,
-    startDate: parseDate(p.startDate),
-    endDate: parseDate(p.endDate),
+    startDate: inverted ? undefined : rawStartDate,
+    endDate: inverted ? undefined : rawEndDate,
     keyword: isFilled(p.keyword) ? p.keyword : undefined,
   }
 }
